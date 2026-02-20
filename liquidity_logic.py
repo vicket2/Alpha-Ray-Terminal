@@ -1,47 +1,60 @@
 import requests
+import json
+import pandas as pd
 
-def analyze_liquidity_master():
-    # 1. 미 재무부 TGA 실시간 데이터 (Daily Treasury Statement)
-    tga_api = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/dts/dts_table_1?sort=-record_date&limit=1"
-    
-    # 2. 연준(Fed) 데이터 시뮬레이션 (2026년 2월 현재 정책 수치 기반)
-    # 실제 운영 시 FRED API(WALCL, RRPONTSYD) 연동 가능
-    fed_assets = 6610000.0   # 연준 총 자산 (단위: 백만 달러)
-    rrp_balance = 2800.0     # 역레포 잔고 (거의 고갈 상태로 가정)
-    
-    try:
-        tga_resp = requests.get(tga_api).json()
-        current_tga = float(tga_resp['data'][0]['close_today_bal'])
-        date = tga_resp['data'][0]['record_date']
-    except:
-        return {"error": "API 연결 실패"}
+class AlphaRaySingularity:
+    def __init__(self):
+        # 1. 인증 및 엔드포인트 설정
+        self.fred_key = "c4fc6d8fa12c167e8252cc35cc59410f"
+        self.tga_api = "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/v1/accounting/dts/dts_table_1?sort=-record_date&limit=1"
+        self.fred_base = "https://api.stlouisfed.org/fred/series/observations"
+        
+        # 2. 감시할 별 3개짜리 핵심 지표 (Macro + Liquidity)
+        self.indicators = {
+            "Core_PCE": "PCEPILFE",      # 근원 개인소비지출
+            "10Y_Yield": "DGS10",        # 미 10년물 국채금리
+            "Unemployment": "UNRATE",    # 실업률
+            "CPI": "CPIAUCSL",           # 소비자물가
+            "RRP": "RRPONTSYD"           # 역레포 잔고 (유동성 완충지대)
+        }
 
-    # 3. [천재적 분석 변수]: 실질 순유동성 (Net Liquidity)
-    # 공식: Net Liquidity = Fed Assets - (TGA + RRP)
-    net_liquidity = fed_assets - (current_tga + rrp_balance)
+    def get_tga(self):
+        res = requests.get(self.tga_api).json()
+        return float(res['data'][0]['close_today_bal'])
 
-    # 4. [미래 예측]: 재무부 베센트(Besent) 장관의 스케줄
-    march_target = 850000.0    # 3월 말 목표
-    april_target = 1025000.0   # 4월 말 목표 (유동성 블랙홀)
-    
-    tga_drift = current_tga - march_target # 3월까지 풀려야 할 돈
-    drain_velocity = (april_target - march_target) / 30 # 4월 하루평균 흡수량
+    def get_fred(self, series_id):
+        url = f"{self.fred_base}?series_id={series_id}&api_key={self.fred_key}&file_type=json&sort_order=desc&limit=1"
+        res = requests.get(url).json()
+        try:
+            return float(res['observations'][0]['value'])
+        except:
+            return 0.0
 
-    # 5. [결론 및 경보]
-    status = "NEUTRAL"
-    if current_tga > 900000:
-        status = "LIQUIDITY_PRESSURE (FIRE_OFF)"
-    if net_liquidity < 5650000:
-        status = "CRITICAL_DANGER (MARGIN_CALL_RISK)"
+    def run_analysis(self):
+        tga = self.get_tga()
+        pce = self.get_fred(self.indicators["Core_PCE"])
+        yield_10y = self.get_fred(self.indicators["10Y_Yield"])
+        
+        # [Alpha Exit Score 공식]
+        # 유동성이 많고(TGA 하락), 물가가 낮으며(PCE 하락), 금리가 안정될수록(10Y 하락) 점수 상승
+        # 현재 기준값(2026.02) 대비 가중치 부여
+        liquidity_factor = (921000 - tga) / 1000  # 921B 대비 방류량
+        macro_factor = (2.5 - pce) * 20           # PCE 2.5% 목표 대비 압력
+        yield_factor = (4.2 - yield_10y) * 10     # 10년물 4.2% 기준 압력
+        
+        exit_score = liquidity_factor + macro_factor + yield_factor
+        
+        status = "🔥 DANGER (Exit Now)" if exit_score < -10 else "⚠️ CAUTION" if exit_score < 10 else "✅ HOLD"
+        
+        return {
+            "TGA_Balance": f"${tga/1000:.1f}B",
+            "Core_PCE": f"{pce}%",
+            "10Y_Yield": f"{yield_10y}%",
+            "Alpha_Exit_Score": round(exit_score, 2),
+            "Final_Status": status
+        }
 
-    return {
-        "date": date,
-        "net_liquidity": f"${net_liquidity:,.0f}M",
-        "tga_to_release": f"${tga_drift:,.0f}M (3월 호재)",
-        "april_blackhole": f"${april_target - march_target:,.0f}M (4월 악재)",
-        "status": status,
-        "strategy": "3월 18~20일 사이 QLD 73-75달러 도달 시 빚투 전량 청산 권고"
-    }
-
+# 엔진 가동
 if __name__ == "__main__":
-    print(analyze_liquidity_master())
+    engine = AlphaRaySingularity()
+    print(json.dumps(engine.run_analysis(), indent=4))
